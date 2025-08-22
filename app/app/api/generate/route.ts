@@ -1,24 +1,12 @@
 import { NextResponse } from 'next/server';
 
+// Browser-Test: GET /api/generate
 export async function GET() {
-  return NextResponse.json({ ok: true, info: 'Use POST to /api/generate' });
+  return NextResponse.json({ ok: true, route: '/api/generate' });
 }
 
-import { NextResponse } from 'next/server';
-
+// cURL/Postman-Test: POST /api/generate
 export async function POST(req: Request) {
-  try {
-    const body = await req.json();
-
-    const response = await fetch(process.env.MAKE_WEBHOOK_URL as string, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    const data = await response.json();
-    return NextResponse.json(data);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  const body = await req.json().catch(() => null);
+  return NextResponse.json({ ok: true, echo: body ?? null });
 }
