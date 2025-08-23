@@ -12,38 +12,47 @@ export async function OPTIONS() {
 
 export async function POST(req: Request) {
   try {
-    // 1) Body 1:1 übernehmen (Lovable sendet Array mit einem Objekt)
+    // 1) Rohdaten holen (Objekt oder Array ist ok)
     const body = await req.json();
+    console.log('[proxy] incoming body:', body);
 
-    // 2) An Make weiterleiten
+    // 2) Optionaler Echo-Modus zum schnellen Test:
+    const url = new URL(req.url);
+    if (url.searchParams.get('echo') === '1') {
+      return NextResponse.json({ ok: true, echoed: body }, { headers: corsHeaders });
+    }
+
+    // 3) An Make weiterleiten
     const makeResp = await fetch(process.env.MAKE_WEBHOOK_URL!, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      cache: 'no-store',
     });
 
-    // 3) Robust parsen: JSON? -> json(); sonst -> text()
     const ct = makeResp.headers.get('content-type') || '';
     let out: any;
+
     if (ct.includes('application/json')) {
       try {
         out = await makeResp.json();
       } catch {
-        // Header sagt JSON, Body ist es aber nicht -> auf Text fallen
         const txt = await makeResp.text();
         out = { result: txt };
       }
     } else {
       const txt = await makeResp.text();
-      // Wenn Make Fehltext liefert, trotzdem gültiges JSON zurückgeben
       out = { result: txt };
     }
+
+    console.log('[proxy] make status:', makeResp.status, 'out:', out);
 
     return NextResponse.json(out, {
       status: makeResp.status || 200,
       headers: corsHeaders,
     });
   } catch (err: any) {
+    console.error('[proxy] error:', err);
     return NextResponse.json(
       { error: err?.message ?? 'Proxy error' },
       { status: 500, headers: corsHeaders }
