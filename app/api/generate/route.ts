@@ -1,53 +1,38 @@
 import { NextResponse } from 'next/server';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',               // oder deine Domain
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Cache-Control': 'no-store',
 };
 
-// 1) Preflight beantworten
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+  // Für Preflight-Anfragen (CORS Check)
+  return NextResponse.json({}, { status: 200, headers: corsHeaders });
 }
 
-// 2) Optionaler GET-Check im Browser
-export async function GET() {
-  return NextResponse.json(
-    { ok: true, info: 'Use POST to /api/generate' },
-    { headers: CORS_HEADERS }
-  );
-}
-
-// 3) Eigentlicher Proxy zu Make
 export async function POST(req: Request) {
   try {
-    const payload = await req.json();
+    // den kompletten Body (Lovable schickt JSON-Array mit einem Objekt)
+    const body = await req.json();
 
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 30000);
-
-    const r = await fetch(process.env.MAKE_WEBHOOK_URL as string, {
+    // an Make weiterreichen
+    const makeResp = await fetch(process.env.MAKE_WEBHOOK_URL!, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
+      body: JSON.stringify(body), // Rohdaten weiterleiten
     });
 
-    clearTimeout(t);
-
-    const text = await r.text();
-    let data: any; try { data = JSON.parse(text); } catch { data = { result: text }; }
+    const data = await makeResp.json();
 
     return NextResponse.json(data, {
-      status: r.ok ? 200 : r.status,
-      headers: CORS_HEADERS,
+      status: makeResp.status,
+      headers: corsHeaders,
     });
   } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message ?? 'proxy-error' },
-      { status: 502, headers: CORS_HEADERS }
+      { error: err.message ?? 'Proxy error' },
+      { status: 500, headers: corsHeaders }
     );
   }
 }
