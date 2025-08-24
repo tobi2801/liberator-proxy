@@ -10,18 +10,17 @@ export async function OPTIONS() {
   return NextResponse.json({}, { status: 200, headers: corsHeaders });
 }
 
+// kleine Helfer
 const str = (v: any) => (typeof v === 'string' ? v : '') as string;
 
 function toFlatArray(input: any) {
-  // Eingabe kann Array oder Objekt sein
   const obj = Array.isArray(input) ? input[0] : input;
 
-  // Schon flach? (topic/details vorhanden) → als Array zurückgeben
+  // schon flach?
   if (obj && typeof obj === 'object' && 'topic' in obj && 'details' in obj) {
     return [obj];
   }
 
-  // Verschachtelte Struktur mit pressData:
   const tool = obj?.tool ?? 'press';
   const organization = obj?.organization ?? '';
   const pd = obj?.pressData ?? {};
@@ -64,26 +63,38 @@ function toFlatArray(input: any) {
 
 export async function POST(req: Request) {
   try {
-    const raw = await req.json();
+    // ---- WICHTIG: Body nur EINMAL lesen (als Text) ----
+    const bodyText = await req.text();               // <- kein req.json()
+    let raw: any;
+    try {
+      raw = JSON.parse(bodyText);
+    } catch {
+      // wenn kein JSON: trotzdem weiterreichen (z. B. für echo‑Tests)
+      raw = bodyText;
+    }
+
     const url = new URL(req.url);
 
-    // 1) Normalisieren (immer: Array mit 1 flachem Objekt)
-    const payload = toFlatArray(raw);
+    // Normalisieren (immer: Array mit 1 flachem Objekt)
+    const payload = typeof raw === 'string' ? raw : toFlatArray(raw);
 
-    // Echo-Modus zum lokalen Testen (um Make auszuschließen)
+    // Nur Transformation prüfen, ohne Make (Debug):
     if (url.searchParams.get('echo') === '1') {
       return NextResponse.json({ ok: true, payload }, { headers: corsHeaders });
     }
 
-    // 2) An Make weiterreichen
+    // An Make senden – Body ebenfalls nur EINMAL erzeugen
+    const bodyForMake =
+      typeof payload === 'string' ? payload : JSON.stringify(payload);
+
     const makeResp = await fetch(process.env.MAKE_WEBHOOK_URL!, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: bodyForMake,
       cache: 'no-store',
     });
 
-    // 3) Antwort robust weiterreichen (JSON/Text)
+    // Make‑Antwort genau EINMAL lesen
     const ct = makeResp.headers.get('content-type') || '';
     let out: any;
     if (ct.includes('application/json')) {
