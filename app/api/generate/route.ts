@@ -10,13 +10,14 @@ export async function OPTIONS() {
   return NextResponse.json({}, { status: 200, headers: corsHeaders });
 }
 
-// kleine Helfer
+// ---- Hilfen --------------------------------------------------------
+
 const str = (v: any) => (typeof v === 'string' ? v : '') as string;
 
 function toFlatArray(input: any) {
   const obj = Array.isArray(input) ? input[0] : input;
 
-  // schon flach?
+  // Bereits flach?
   if (obj && typeof obj === 'object' && 'topic' in obj && 'details' in obj) {
     return [obj];
   }
@@ -61,29 +62,44 @@ function toFlatArray(input: any) {
   return [flat];
 }
 
+// Body sicher lesen (einmal). Wenn schon konsumiert: clone versuchen.
+async function readBodyOnce(req: Request): Promise<string> {
+  try {
+    return await req.text();
+  } catch (e) {
+    // Falls bereits konsumiert (z. B. von Middleware), versuche Clone
+    try {
+      const clone = req.clone();
+      return await clone.text();
+    } catch (e2) {
+      throw e; // ursprünglichen Fehler weiterreichen
+    }
+  }
+}
+
+// ---- Route ---------------------------------------------------------
+
 export async function POST(req: Request) {
   try {
-    // ---- WICHTIG: Body nur EINMAL lesen (als Text) ----
-    const bodyText = await req.text();               // <- kein req.json()
-    let raw: any;
+    // 1) Body genau einmal lesen
+    const bodyText = await readBodyOnce(req);
+
+    let raw: any = bodyText;
     try {
       raw = JSON.parse(bodyText);
     } catch {
-      // wenn kein JSON: trotzdem weiterreichen (z. B. für echo‑Tests)
-      raw = bodyText;
+      // kein JSON → lassen wir als Text (für echo-Tests)
     }
 
     const url = new URL(req.url);
-
-    // Normalisieren (immer: Array mit 1 flachem Objekt)
     const payload = typeof raw === 'string' ? raw : toFlatArray(raw);
 
-    // Nur Transformation prüfen, ohne Make (Debug):
+    // Debug ohne Make
     if (url.searchParams.get('echo') === '1') {
       return NextResponse.json({ ok: true, payload }, { headers: corsHeaders });
     }
 
-    // An Make senden – Body ebenfalls nur EINMAL erzeugen
+    // 2) An Make (Body einmal erzeugen)
     const bodyForMake =
       typeof payload === 'string' ? payload : JSON.stringify(payload);
 
@@ -94,7 +110,7 @@ export async function POST(req: Request) {
       cache: 'no-store',
     });
 
-    // Make‑Antwort genau EINMAL lesen
+    // 3) Make-Antwort genau einmal konsumieren
     const ct = makeResp.headers.get('content-type') || '';
     let out: any;
     if (ct.includes('application/json')) {
@@ -113,7 +129,11 @@ export async function POST(req: Request) {
     });
   } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message ?? 'Proxy error' },
+      {
+        error: err?.message ?? 'Proxy error',
+        hint:
+          'Stelle sicher, dass die Response im Frontend nur einmal gelesen wird und kein zweiter Request gesendet wird.',
+      },
       { status: 500, headers: corsHeaders }
     );
   }
