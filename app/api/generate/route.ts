@@ -26,62 +26,10 @@ export async function GET() {
  * Hilfsfunktionen
  * --------------------------------------------------------- */
 
-/** sichere String-Konvertierung */
-const str = (v: any) => (typeof v === 'string' ? v : '') as string;
+const s = (v: any) => (typeof v === 'string' ? v : '') as string;
+const b = (v: any) => Boolean(v);
 
-/**
- * Lovable liefert verschachtelt (pressData…). Wir formen es in das
- * flache Schema um, das du in Make verwendest.
- */
-function toFlatArray(input: any) {
-  const obj = Array.isArray(input) ? input[0] : input;
-
-  // Falls schon flach (topic/details existieren) → unverändert
-  if (obj && typeof obj === 'object' && 'topic' in obj && 'details' in obj) {
-    return [obj];
-  }
-
-  const tool = obj?.tool ?? 'press';
-  const organization = obj?.organization ?? '';
-  const pd = obj?.pressData ?? {};
-  const quotes: any[] = Array.isArray(pd.quotes) ? pd.quotes : [];
-
-  const q = (i: number) => ({
-    name: str(quotes[i]?.name),
-    func: str(quotes[i]?.function),
-  });
-
-  const q1 = q(0);
-  const q2 = q(1);
-  const q3 = q(2);
-
-  const contact = pd.contact ?? {};
-
-  const flat = {
-    tool: String(tool),
-    organization: String(organization),
-    topic: str(pd.topic),
-    details: str(pd.details),
-
-    quote1_name: q1.name,
-    quote1_function: q1.func,
-    quote2_name: q2.name,
-    quote2_function: q2.func,
-    quote3_name: q3.name,
-    quote3_function: q3.func,
-
-    contact_name: str(contact.name),
-    contact_function: str(contact.function),
-    contact_details: str(contact.contactDetails),
-
-    include_organization: Boolean(pd.includeOrganization),
-    organization_unit: str(pd.organizationUnit),
-  };
-
-  return [flat];
-}
-
-/** Body genau einmal lesen */
+/** Body genau einmal lesen (verhindert "Body has already been read") */
 async function readBodyOnce(req: Request): Promise<string> {
   try {
     return await req.text();
@@ -105,34 +53,115 @@ async function postToMake(bodyForMake: string) {
     });
 
     const txt = await r.text();
-    const isJson =
-      (r.headers.get('content-type') || '').includes('application/json');
+    const isJson = (r.headers.get('content-type') || '').includes('application/json');
 
     const out = isJson
-      ? (() => {
-          try {
-            return JSON.parse(txt);
-          } catch {
-            return { result: txt };
-          }
-        })()
+      ? (() => { try { return JSON.parse(txt); } catch { return { result: txt }; } })()
       : { result: txt };
 
     // Make-Engpass: 400 + "Queue is full."
-    if (
-      r.status === 400 &&
-      typeof out.result === 'string' &&
-      out.result.includes('Queue is full')
-    ) {
+    if (r.status === 400 && typeof out.result === 'string' && out.result.includes('Queue is full')) {
       if (i < max - 1) {
-        await new Promise((res) => setTimeout(res, (i + 1) * 1200));
+        await new Promise(res => setTimeout(res, (i + 1) * 1200)); // 1.2s, 2.4s
         continue;
       }
     }
-
     return { status: r.status, out };
   }
   return { status: 400, out: { result: 'Queue is full (retries exceeded).' } };
+}
+
+/* -----------------------------------------------------------
+ * Normalisierung: verschachtelte Lovable-Payload → flaches Schema
+ * für Make. Unterstützt press, motion, speech, social + Fallback.
+ * Rückgabe ist IMMER: [ <ein flaches Objekt> ]
+ * --------------------------------------------------------- */
+
+function normalizePayload(raw: any) {
+  const obj = Array.isArray(raw) ? raw[0] : (raw || {});
+  const tool = String(obj?.tool ?? 'press');
+  const organization = String(obj?.organization ?? '');
+
+  // Falls bereits "flach": tool vorhanden und irgendein Kernfeld
+  const looksFlat =
+    obj && typeof obj === 'object' && 'tool' in obj &&
+    (
+      'topic' in obj || 'details' in obj || 'idea' in obj ||
+      'content' in obj || 'input_text' in obj || 'inputText' in obj ||
+      'platforms' in obj || 'rhetoric_pattern' in obj || 'duration_minutes' in obj
+    );
+  if (looksFlat) return [obj];
+
+  const out: any = { tool, organization };
+
+  switch (tool) {
+    case 'press': {
+      const pd = obj?.pressData ?? {};
+      const quotes: any[] = Array.isArray(pd.quotes) ? pd.quotes : [];
+      const q = (i: number) => ({ name: s(quotes[i]?.name), func: s(quotes[i]?.function) });
+      const c = pd.contact ?? {};
+      Object.assign(out, {
+        topic: s(pd.topic),
+        details: s(pd.details),
+
+        // bis zu 3 Zitate
+        quote1_name: q(0).name, quote1_function: q(0).func,
+        quote2_name: q(1).name, quote2_function: q(1).func,
+        quote3_name: q(2).name, quote3_function: q(2).func,
+
+        // Kontakt
+        contact_name: s(c.name),
+        contact_function: s(c.function),
+        contact_details: s(c.contactDetails),
+
+        include_organization: b(pd.includeOrganization),
+        organization_unit: s(pd.organizationUnit),
+      });
+      break;
+    }
+
+    case 'motion': {
+      const md = obj?.motionData ?? {};
+      Object.assign(out, {
+        idea: s(md.idea),
+        details: s(md.details),
+        include_research: b(md.includeResearch),
+      });
+      break;
+    }
+
+    case 'speech': {
+      const sd = obj?.speechData ?? {};
+      const duration = Array.isArray(sd.duration) ? Number(sd.duration[0]) : Number(sd.duration ?? 0);
+      Object.assign(out, {
+        topic: s(sd.topic),
+        rhetoric_pattern: s(sd.rhetoricPattern),
+        duration_minutes: isNaN(duration) ? 0 : duration,
+      });
+      break;
+    }
+
+    case 'social': {
+      const so = obj?.socialData ?? {};
+      const platforms = Array.isArray(so.platforms) ? so.platforms.map(String) : [];
+      Object.assign(out, {
+        platforms,
+        topic: s(so.topic),
+        content: s(so.content),
+        include_organization: b(so.includeOrganization),
+        organization_unit: s(so.organizationUnit),
+      });
+      break;
+    }
+
+    default: {
+      // Fallback: Freitext / generisch
+      out.input_text = s(obj?.inputText ?? obj?.text ?? '');
+      break;
+    }
+  }
+
+  return [out];
 }
 
 /* -----------------------------------------------------------
@@ -150,29 +179,27 @@ export async function POST(req: Request) {
     // 1) Body **einmal** lesen
     const bodyText = await readBodyOnce(req);
 
+    // 2) JSON parsen (falls möglich)
     let raw: any = bodyText;
-    try {
-      raw = JSON.parse(bodyText);
-    } catch {
-      // wenn kein JSON → als Text weiterreichen
-    }
+    try { raw = JSON.parse(bodyText); } catch { /* wenn kein JSON → als Text weiterreichen */ }
 
-    // 2) Transformation nach flachem Schema
-    const payload = typeof raw === 'string' ? raw : toFlatArray(raw);
+    // 3) Normalisieren zu flachem Schema
+    const payload =
+      typeof raw === 'string'
+        ? [{ tool: 'generic', input_text: raw }]
+        : normalizePayload(raw);
 
-    // 3) Echo-Test (Debug)
+    // 4) Echo-Test (Debug)
     const url = new URL(req.url);
     if (url.searchParams.get('echo') === '1') {
       return NextResponse.json({ ok: true, payload }, { headers: corsHeaders });
     }
 
-    // 4) An Make mit Retries
-    const bodyForMake =
-      typeof payload === 'string' ? payload : JSON.stringify(payload);
-
+    // 5) An Make mit Retries
+    const bodyForMake = JSON.stringify(payload);
     const { status, out } = await postToMake(bodyForMake);
 
-    // 5) Antwort an Lovable
+    // 6) Antwort an Lovable
     return NextResponse.json(out, {
       status: status || 200,
       headers: corsHeaders,
@@ -181,8 +208,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error: err?.message ?? 'Proxy error',
-        hint:
-          'Stelle sicher, dass der Client nur EINEN POST sendet und die Response nur EINMAL liest.',
+        hint: 'Stelle sicher, dass der Client nur EINEN POST sendet und die Response nur EINMAL liest.',
       },
       { status: 500, headers: corsHeaders }
     );
